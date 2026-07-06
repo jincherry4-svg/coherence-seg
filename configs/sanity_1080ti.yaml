@@ -1,0 +1,20 @@
+# 煙霧測試設定：Colab 快速驗證 / 備用 GTX 1080 Ti（規格書 §9.4）
+# 僅驗證程式能跑通，不看指標。
+data:
+  max_len: 1024
+  batch_size: 1
+  num_workers: 0
+  max_train_docs: 64
+  max_unlabeled_docs: 32
+train:
+  epochs: 1
+  precision: 16-mixed
+  grad_accum: 8
+  ckpt_every_n_steps: 20
+loss:
+  lambda1_ramp_steps: 20
+  lambda2_ramp_steps: 40
+curriculum:
+  acc_window: 10
+wandb:
+  enabled: false

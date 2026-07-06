@@ -1,0 +1,5 @@
+# M2：加入句子重組輔助任務 + curriculum（規格書 §11 M2）
+flags:
+  use_reorder: true
+wandb:
+  group: m2_reorder

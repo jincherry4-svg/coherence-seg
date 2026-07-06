@@ -1,0 +1,10 @@
+# M4：全開（規格書 §11 M4）
+# 在 M3 之上，無標註 batch 同時計 L_reorder 與一致性損失。
+# M4−M3 的差異 = 無標註重組訊號的貢獻。
+flags:
+  use_reorder: true
+  use_unlabeled: true
+  use_mean_teacher: true
+  unlabeled_reorder: true
+wandb:
+  group: m4_full

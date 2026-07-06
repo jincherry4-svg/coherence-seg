@@ -1,0 +1,10 @@
+# M3：M2 + Mean Teacher（規格書 §11 M3）
+# 教師看完整文件、學生看挖空文件；無標註資料「只」透過一致性損失貢獻
+# （unlabeled_reorder=false），使 M3−M2 的差異純粹來自 Mean Teacher。
+flags:
+  use_reorder: true
+  use_unlabeled: true
+  use_mean_teacher: true
+  unlabeled_reorder: false
+wandb:
+  group: m3_meanteacher

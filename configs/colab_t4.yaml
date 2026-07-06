@@ -1,0 +1,7 @@
+# 設備疊加設定：Colab T4（16GB, Turing，支援 fp16 Tensor Core、不支援 bf16）
+# 用法：python -m src.train --config configs/m0_baseline.yaml configs/colab_t4.yaml
+data:
+  batch_size: 1
+train:
+  precision: 16-mixed
+  grad_accum: 8

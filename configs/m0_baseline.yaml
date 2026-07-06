@@ -1,0 +1,3 @@
+# M0：純 Longformer + 邊界分類頭 baseline（規格書 §11 M0）
+wandb:
+  group: m0_baseline

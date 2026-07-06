@@ -1,0 +1,13 @@
+torch>=2.1
+transformers>=4.38
+datasets>=2.16
+pytorch-lightning>=2.1
+omegaconf>=2.3
+wandb
+protobuf==3.20.3
+pysbd
+scipy
+scikit-learn
+segeval
+numpy
+pytest

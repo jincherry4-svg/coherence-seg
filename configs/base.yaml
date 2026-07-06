@@ -1,0 +1,61 @@
+# 共用設定（Colab A100）。各里程碑 config 只覆寫差異欄位。
+seed: 42
+ckpt_dir: /content/drive/MyDrive/coherence-seg/checkpoints
+
+flags:
+  use_reorder: false        # M2+：句子挖空填回輔助任務
+  use_unlabeled: false      # M3+：混入無標註資料
+  use_mean_teacher: false   # M3+：EMA 教師 + 一致性損失
+  unlabeled_reorder: false  # M4：無標註 batch 也計 L_reorder（M3 只走一致性）
+
+model:
+  # AllenAI 原始 Longformer 預訓練權重，經 HF transformers 的 LongformerModel 載入。
+  # 不使用 allenai/longformer GitHub repo 的舊版自訂 CUDA kernel（已停止維護，
+  # 且 SpokenNLP baseline 亦使用 HF 版，換載入器會破壞可比性）。
+  name: allenai/longformer-base-4096
+  dropout: 0.1
+  gradient_checkpointing: true
+
+data:
+  train_path: /content/data/wiki_section_disease/train.jsonl
+  dev_path: /content/data/wiki_section_disease/dev.jsonl
+  test_path: /content/data/wiki_section_disease/test.jsonl
+  unlabeled_path: /content/data/unlabeled/wiki_unlabeled_50k.jsonl
+  max_len: 4096
+  batch_size: 2
+  num_workers: 2
+
+optim:
+  lr_encoder: 2.0e-5
+  lr_heads: 1.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+
+loss:
+  seg_type: focal           # focal | bce
+  focal_gamma: 2.0
+  focal_alpha: 0.75
+  pos_weight: 8.0
+  lambda1_max: 0.5          # 重組任務權重上限（§6）
+  lambda1_ramp_steps: 2000
+  lambda2_max: 1.0          # 一致性損失權重上限（§6）
+  lambda2_ramp_steps: 4000
+
+curriculum:
+  acc_window: 200           # 重組準確率移動平均視窗（steps）
+  acc_threshold: 0.60
+
+mean_teacher:
+  max_decay: 0.999
+
+train:
+  epochs: 10
+  precision: bf16-mixed
+  grad_accum: 4             # 有效 batch = 2 × 4 = 8
+  patience: 3
+  ckpt_every_n_steps: 500   # §9.3 斷線防護
+
+wandb:
+  enabled: true
+  project: coherence-seg
+  group: default
