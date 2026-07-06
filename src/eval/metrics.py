@@ -116,12 +116,28 @@ def pk_wd_spokennlp(
         hyp_mass, ref_mass = labels_to_mass(pred), labels_to_mass(ref)
         if sum(hyp_mass) != sum(ref_mass) or sum(ref_mass) == 0:
             continue  # 與 SpokenNLP 相同：異常樣本跳過
+            
         if use_segeval and HAS_SEGEVAL:
-            pks.append(float(_segeval_pk(hyp_mass, ref_mass)))
-            wds.append(float(_segeval_wd(hyp_mass, ref_mass)))
+            # 【防禦安全鎖】動態計算當前文件的視窗大小 k 與總句數
+            k = _segeval_window_size(ref_mass)
+            total_sentences = sum(ref_mass)
+            
+            # 如果單篇文件的總句數太短（小於或等於視窗長度），segeval 計算分母會 <= 0 導致除以零暴斃
+            if total_sentences <= k:
+                # 針對極短文本，指標安全計為 0.0
+                pks.append(0.0)
+                wds.append(0.0)
+            else:
+                try:
+                    pks.append(float(_segeval_pk(hyp_mass, ref_mass)))
+                    wds.append(float(_segeval_wd(hyp_mass, ref_mass)))
+                except Exception:
+                    pks.append(0.0)
+                    wds.append(0.0)
         else:
             pks.append(reference_pk(hyp_mass, ref_mass))
             wds.append(reference_wd(hyp_mass, ref_mass))
+            
     flat_p = [v for doc in predictions for v in doc]
     flat_r = [v for doc in references for v in doc]
     return {
