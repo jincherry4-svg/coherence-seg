@@ -126,6 +126,16 @@ class SegLitModule(pl.LightningModule):
         self.log_dict({"train/lambda1": lam1, "train/lambda2": lam2,
                        "train/p_stage": float(self.curriculum.stage.value) if self.curriculum else 0.0})
         self._maybe_advance_curriculum()
+
+        # 【防彈級安全鎖】防止特定 Batch 因無效標籤導致 total 失去 grad_fn 觸發暴斃
+        if total.grad_fn is None:
+            # 尋找模型中任何一個需要梯度的參數，將其乘上 0.0 注入 total
+            # 這樣數值完全保持不變，但能強制幫 total 接回 PyTorch 的反向傳播計算圖中
+            for param in self.parameters():
+                if param.requires_grad:
+                    total = total + (param.sum() * 0.0)
+                    break
+        
         return total
 
     def on_train_batch_end(self, *args, **kwargs):
