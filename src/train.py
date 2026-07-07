@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 
 import pytorch_lightning as pl
@@ -58,6 +59,81 @@ def build_loaders(cfg, tokenizer, ids, seed):
     return loaders, train_ctrl
 
 
+def _find_last_ckpt(ckpt_dir):
+    """回傳 ckpt_dir 下最新的 last*.ckpt（含 Lightning 的 last-v1.ckpt 版本後綴），無則 None。"""
+    cands = glob.glob(os.path.join(ckpt_dir, "last*.ckpt"))
+    if not cands:
+        return None
+    return max(cands, key=os.path.getmtime)
+
+
+def resolve_resume(cfg, exp_tag, seed, want_resume):
+    """解析續訓 checkpoint，並把整個判斷過程印出來（§9.3）。
+
+    回傳 (ckpt_path 或 None, ckpt_dir)。ckpt_dir 是本次訓練「應該」讀寫的資料夾，
+    與 ModelCheckpoint 的 dirpath 一致，確保存檔與續訓永遠指向同一處。
+
+    設計原則：
+    - exp_tag 只取里程碑 config（不含設備 config），所以同一實驗換設備、斷線重連，
+      資料夾名都固定為 {ckpt_dir}/{里程碑}/seed{seed}，續訓才找得回來。
+    - 找不到時「大聲」印警告並掃描其他可能的根目錄，把真正的 checkpoint 位置攤在眼前，
+      但**仍回傳 None 從頭開始**——因為 run_all_seeds.sh 對每個 seed 都無條件帶 --resume，
+      報錯中止會害整批多 seed 掛掉。
+    """
+    ckpt_dir = os.path.abspath(os.path.join(cfg.ckpt_dir, exp_tag, f"seed{seed}"))
+    resume_path = _find_last_ckpt(ckpt_dir)
+
+    print("=" * 68)
+    print(f"[resume] --resume = {want_resume}")
+    print(f"[resume] 解析後的 ckpt_dir : {ckpt_dir}")
+    print(f"[resume] 此目錄的 last*.ckpt: {resume_path or '（無）'}")
+
+    if not want_resume:
+        print("[resume] 未指定 --resume → 從頭訓練（step 0）")
+        print("=" * 68)
+        return None, ckpt_dir
+
+    if resume_path:
+        size_gb = os.path.getsize(resume_path) / 1e9
+        print(f"[resume] ✅ 將從此 checkpoint 續訓（{size_gb:.2f} GB）：{resume_path}")
+        print("=" * 68)
+        return resume_path, ckpt_dir
+
+    # 指定了 --resume 卻沒找到 → 掃描其他常見根目錄，把真正的位置指出來
+    print("[resume] ⚠️  指定了 --resume，但上述目錄找不到 last.ckpt！")
+    print("[resume] ⚠️  將從頭開始（step 0）。若你預期要續訓，請看以下掃描結果對齊路徑：")
+    seen = set()
+    hits = []
+    candidate_roots = [
+        cfg.ckpt_dir,
+        os.environ.get("CKPT_DIR", ""),
+        "./checkpoints",
+        "/content/drive/MyDrive/coherence-seg/checkpoints",
+        "/content/drive/MyDrive/LongformerSC/coherence-seg/checkpoints",
+    ]
+    for root in candidate_roots:
+        if not root:
+            continue
+        root_abs = os.path.abspath(root)
+        if root_abs in seen or not os.path.isdir(root_abs):
+            continue
+        seen.add(root_abs)
+        for f in glob.glob(os.path.join(root_abs, "**", f"seed{seed}", "last*.ckpt"),
+                           recursive=True):
+            hits.append(f)
+    if hits:
+        print("[resume] 🔎 在其他位置找到符合本 seed 的 checkpoint：")
+        for f in sorted(set(hits)):
+            print(f"           - {f}  ({os.path.getsize(f)/1e9:.2f} GB)")
+        print("[resume] 👉 若要用它續訓，讓 ckpt_dir 對齊該根目錄，例如：")
+        print("           export CKPT_DIR=<那個根>  或  改用對應的設備 config（1080 Ti→./checkpoints，A100→Drive）")
+        print("           注意 §9.5：續訓務必用與存檔時相同的設備/精度，勿跨 fp16↔bf16 續訓。")
+    else:
+        print(f"[resume] 🔎 掃描過的根目錄都沒有 seed{seed} 的 last.ckpt。確認 Drive 已掛載、且此 seed 之前真的有跑過。")
+    print("=" * 68)
+    return None, ckpt_dir
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, nargs="+",
@@ -69,7 +145,15 @@ def main():
     cfg = OmegaConf.load("configs/base.yaml")
     for c in args.config:
         cfg = OmegaConf.merge(cfg, OmegaConf.load(c))
+    # CKPT_DIR 環境變數優先於 config（與 run_all_seeds.sh 的 MARK_DIR 一致）。
+    # 用途：checkpoint 存到了非預設根目錄時，一行 export 即可讓存檔與續訓對齊，免改 yaml。
+    if os.environ.get("CKPT_DIR"):
+        cfg.ckpt_dir = os.environ["CKPT_DIR"]
+    # run_tag：完整（含設備）→ 只用於 wandb 顯示，看得出這個 run 跑在哪個設備。
+    # exp_tag：只取里程碑 config（args.config[0]，依 docstring 慣例里程碑一律排第一）
+    #          → 用於 checkpoint 資料夾。設備不同不該改變實驗身分，否則續訓找不回來。
     run_tag = "-".join(os.path.basename(c).replace(".yaml", "") for c in args.config)
+    exp_tag = os.path.basename(args.config[0]).replace(".yaml", "")
     seed = args.seed if args.seed is not None else cfg.seed
     pl.seed_everything(seed, workers=True)
 
@@ -87,7 +171,9 @@ def main():
                              name=f"{run_tag}-s{seed}",
                              config={"seed": seed, **OmegaConf.to_container(cfg)})
 
-    ckpt_dir = os.path.join(cfg.ckpt_dir, run_tag, f"seed{seed}")
+    # 先解析續訓：回傳的 ckpt_dir 同時作為 ModelCheckpoint 的 dirpath，
+    # 保證「存檔目錄」與「續訓讀取目錄」永遠是同一個。
+    ckpt_path, ckpt_dir = resolve_resume(cfg, exp_tag, seed, args.resume)
     callbacks = [
         ModelCheckpoint(dirpath=ckpt_dir, monitor="val/pk", mode="min", save_top_k=1,
                         save_last=True, every_n_train_steps=cfg.train.ckpt_every_n_steps),
@@ -114,8 +200,6 @@ def main():
     else:
         train_loader = loaders["train"]
 
-    resume_path = os.path.join(ckpt_dir, "last.ckpt")
-    ckpt_path = resume_path if (args.resume and os.path.exists(resume_path)) else None
     trainer.fit(module, train_loader, loaders["val"], ckpt_path=ckpt_path)
     trainer.test(module, loaders["test"], ckpt_path="best")
 
