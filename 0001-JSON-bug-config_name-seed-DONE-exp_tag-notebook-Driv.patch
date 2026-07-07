@@ -1,0 +1,80 @@
+From 875dc5d8301af5a14c8414b53277f21a74a33aad Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 7 Jul 2026 02:23:41 +0000
+Subject: [PATCH 1/3] =?UTF-8?q?=E4=BF=AE=E5=BE=A9=E7=B5=90=E6=9E=9C=20JSON?=
+ =?UTF-8?q?=20=E5=91=BD=E5=90=8D=20bug=EF=BC=88=E6=B3=A8=E5=85=A5=20config?=
+ =?UTF-8?q?=5Fname/seed=EF=BC=89=E3=80=81DONE=20=E6=A8=99=E8=A8=98?=
+ =?UTF-8?q?=E5=B0=8D=E9=BD=8A=20exp=5Ftag=E3=80=81notebook=20Drive=20?=
+ =?UTF-8?q?=E8=B7=AF=E5=BE=91=E8=A3=9C=20LongformerSC=20=E5=89=8D=E7=B6=B4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ notebooks/colab_runner.ipynb | 6 +++---
+ scripts/run_all_seeds.sh     | 6 +++++-
+ src/train.py                 | 7 +++++++
+ 3 files changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/notebooks/colab_runner.ipynb b/notebooks/colab_runner.ipynb
+index a99841d..47b7afe 100644
+--- a/notebooks/colab_runner.ipynb
++++ b/notebooks/colab_runner.ipynb
+@@ -79,7 +79,7 @@
+    "source": [
+     "# 5. 資料同步：Drive → /content 本地（Drive 直讀太慢，§12 陷阱 12）\n",
+     "!mkdir -p /content/data\n",
+-    "!cp -rn /content/drive/MyDrive/coherence-seg/data/* /content/data/ || echo '請先把資料放到 Drive: MyDrive/coherence-seg/data/'\n",
++    "!cp -rn /content/drive/MyDrive/LongformerSC/coherence-seg/data/* /content/data/ || echo '請先把資料放到 Drive: MyDrive/LongformerSC/coherence-seg/data/'\n",
+     "!ls /content/data"
+    ],
+    "execution_count": null,
+@@ -133,8 +133,8 @@
+    "source": [
+     "# 10. 結果彙整回存 Drive\n",
+     "!python -m src.eval.aggregate --pattern 'results/*.json' --out results/ABLATION.md\n",
+-    "!mkdir -p /content/drive/MyDrive/coherence-seg/results\n",
+-    "!cp -r results/* /content/drive/MyDrive/coherence-seg/results/"
++    "!mkdir -p /content/drive/MyDrive/LongformerSC/coherence-seg/results\n",
++    "!cp -r results/* /content/drive/MyDrive/LongformerSC/coherence-seg/results/"
+    ],
+    "execution_count": null,
+    "outputs": []
+diff --git a/scripts/run_all_seeds.sh b/scripts/run_all_seeds.sh
+index c46a418..5a2a674 100644
+--- a/scripts/run_all_seeds.sh
++++ b/scripts/run_all_seeds.sh
+@@ -3,7 +3,11 @@
+ # 用法：bash scripts/run_all_seeds.sh configs/m2_reorder.yaml [configs/lab_1080ti.yaml]
+ set -e
+ CONFIGS=("$@")
+-NAME=$(IFS=-; parts=(); for c in "${CONFIGS[@]}"; do parts+=("$(basename "$c" .yaml)"); done; echo "${parts[*]}")
++# NAME 只取第一個 config（里程碑），與 src/train.py 的 exp_tag 定義完全對齊。
++# 舊行為把設備 config 也串進去，導致 DONE 標記寫到 m0_baseline-lab_1080ti/ 之類的
++# 目錄，而實際 checkpoint 卻在 m0_baseline/ ——兩棵目錄樹分家，跳過/重跑判斷全錯
++#（見 DEBUG_HANDOFF_REPORT.md 殘留問題、IMPLEMENTATION_SPEC.md §12 陷阱 16）。
++NAME=$(basename "${CONFIGS[0]}" .yaml)
+ MARK_DIR=${CKPT_DIR:-/content/drive/MyDrive/LongformerSC/coherence-seg/checkpoints}/$NAME
+ for SEED in 42 43 44 45 46; do
+   MARK="$MARK_DIR/seed$SEED/DONE"
+diff --git a/src/train.py b/src/train.py
+index ffac950..4ad7904 100644
+--- a/src/train.py
++++ b/src/train.py
+@@ -171,6 +171,13 @@ def main():
+     run_tag = "-".join(os.path.basename(c).replace(".yaml", "") for c in args.config)
+     exp_tag = os.path.basename(args.config[0]).replace(".yaml", "")
+     seed = args.seed if args.seed is not None else cfg.seed
++    # 【重要】把實驗身分注入 cfg，供 lit_module 的 on_test_epoch_end 寫 results JSON 使用：
++    # - cfg.config_name：不注入的話會退回 cfg.model.name（例如 longformer-base-4096），
++    #   M0/M2/M3/M4 的結果檔名撞在一起互相覆蓋，aggregate 無法分辨里程碑。
++    # - cfg.seed：不回寫的話，--seed 43/44/... 跑出來的 JSON 仍讀 base.yaml 的預設 seed，
++    #   五個 seed 的結果全寫到同一個 _seed42.json 互相覆蓋。
++    cfg.config_name = exp_tag
++    cfg.seed = seed
+     pl.seed_everything(seed, workers=True)
+ 
+     tokenizer = build_tokenizer(cfg)
+-- 
+2.43.0
+
