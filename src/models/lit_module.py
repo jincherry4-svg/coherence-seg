@@ -55,7 +55,15 @@ class SegLitModule(pl.LightningModule):
         self._test_probs: list[list[float]] = []
         self._test_refs: list[list[int]] = []
         
-        self.save_hyperparameters({"cfg": dict(cfg)})
+        # 存超參數：用 OmegaConf.to_container 深層轉成純 dict。
+        # 原本的 dict(cfg) 只做淺層轉換，巢狀值仍是 OmegaConf DictConfig 物件，
+        # 會被 pickle 進 checkpoint，導致 PyTorch 2.6（weights_only=True 預設）載入失敗。
+        try:
+            from omegaconf import OmegaConf
+            cfg_to_save = OmegaConf.to_container(cfg, resolve=True) if OmegaConf.is_config(cfg) else dict(cfg)
+        except Exception:
+            cfg_to_save = dict(cfg)
+        self.save_hyperparameters({"cfg": cfg_to_save})
 
     # ---------- loss 組件 ----------
 
