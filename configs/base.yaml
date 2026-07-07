@@ -1,6 +1,6 @@
 # 共用設定（Colab A100）。各里程碑 config 只覆寫差異欄位。
 seed: 42
-ckpt_dir: /content/drive/MyDrive/coherence-seg/checkpoints
+ckpt_dir: /content/drive/MyDrive/LongformerSC/coherence-seg/checkpoints
 
 flags:
   use_reorder: false        # M2+：句子挖空填回輔助任務
