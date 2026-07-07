@@ -27,7 +27,19 @@ except ImportError:  # pragma: no cover
 
 
 def labels_to_mass(labels: list[int]) -> list[int]:
-    """[1,1,0,0,1,1] → [1,1,3,1]。1 = 該句關閉一個段落；殘尾自成一段。"""
+    """[1,1,0,0,1,1] → [1,1,3,1]。1 = 該句關閉一個段落；殘尾自成一段。
+
+    輸入必須是已過濾的 0/1 序列。若收到 -100 直接報錯：依 SpokenNLP
+    postprocess_predictions.py 的 para_level 慣例，-100 位置必須在
+    「pred 與 ref 成對」的前提下先剔除（見 drop_ignored_pairwise）；
+    單一序列自行跳過 -100 會造成 pred/ref 長度錯位、指標悄悄失真，
+    所以這裡選擇大聲失敗而非靜默處理。
+    """
+    if -100 in labels:
+        raise ValueError(
+            "labels_to_mass 收到 -100：請先用 drop_ignored_pairwise 對 pred/ref "
+            "成對剔除 -100 位置（SpokenNLP para_level 慣例），再轉 mass。"
+        )
     mass, cur = [], 0
     for v in labels:
         cur += 1
@@ -37,6 +49,22 @@ def labels_to_mass(labels: list[int]) -> list[int]:
     if cur > 0:
         mass.append(cur)
     return mass
+
+
+def drop_ignored_pairwise(
+    pred: list[int], ref: list[int], ignore_index: int = -100
+) -> tuple[list[int], list[int]]:
+    """依 ref 中的 ignore_index 位置，把 pred 與 ref **成對**剔除。
+
+    對齊 SpokenNLP postprocess_predictions.py 的 para_level 評估：模型只在
+    label != -100 的位置有預測，Pk/WD 只在段落末句序列上計算。
+    """
+    assert len(pred) == len(ref), f"pred/ref 長度不一致：{len(pred)} vs {len(ref)}"
+    kept = [(p, r) for p, r in zip(pred, ref) if r != ignore_index]
+    if not kept:
+        return [], []
+    ps, rs = zip(*kept)
+    return list(ps), list(rs)
 
 
 # ---------- 純 Python 參考實作（與 segeval 定義對齊） ----------
@@ -109,8 +137,18 @@ def pk_wd_spokennlp(
     """逐篇計算 Pk/WD 後平均（SpokenNLP 的 example-level 作法）。
 
     Args:
-        predictions/references: 每篇文件的 0/1 標籤序列（1 = 段落最後一句）。
+        predictions/references: 每篇文件的標籤序列（1 = 段落末句關閉段落）。
+        允許 ref 含 -100：會先依 SpokenNLP para_level 慣例對 pred/ref 成對
+        剔除，之後的 Pk/WD 與攤平計算的 F1/precision/recall 都在乾淨序列上。
     """
+    # 統一入口剔除 -100（上游如 lit_module 已過濾者不受影響）
+    _cleaned = [
+        drop_ignored_pairwise(p, r) if -100 in r else (p, r)
+        for p, r in zip(predictions, references)
+    ]
+    predictions = [c[0] for c in _cleaned]
+    references = [c[1] for c in _cleaned]
+
     pks, wds = [], []
     for pred, ref in zip(predictions, references):
         hyp_mass, ref_mass = labels_to_mass(pred), labels_to_mass(ref)

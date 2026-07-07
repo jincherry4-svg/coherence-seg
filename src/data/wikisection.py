@@ -1,13 +1,18 @@
 """WikiSection（SpokenNLP 格式）與無標註資料的載入。
 
 【邊界標籤慣例 — 全 repo 唯一，已對照 SpokenNLP 原始碼確認】
-SpokenNLP（emnlp2023-topic_segmentation）的 jsonl 中，labels[i] == "1" 代表
-第 i 句是「段落最後一句」（其 dataset script 將 "1" 映射為 B-EOP，註解為
-"end sentence of topic"；label_to_id 為 {'B-EOP': 0, 'O': 1}，即其二分類
-模型空間中 class 0 = 邊界）。本 repo 內部一律使用整數 1 = 邊界（段落最後
-一句）、0 = 非邊界，僅在需要與 SpokenNLP 模型輸出直接對照時才需注意其
-class index 反轉；Pk/WD 計算只依賴「1 = 關閉一個段落」的 mass 轉換，與
-本慣例一致（見 src/eval/metrics.py）。
+出處：SpokenNLP（emnlp2023-topic_segmentation）`src/preprocess_data.py` 的
+`tokenize_method`：每個段落產生 `[-100]*(len(p_sents)-1) + [0]`，章節最後
+一句再改為 1（原始碼註解："label of final sentence of topic is 1, final
+sentence of each paragraph is 0, other sentences is -100"）。即**三分類**：
+
+    -100 = 段落內非末句 → 忽略（不計 loss、不進評估）
+       0 = 段落最後一句、但非主題邊界
+       1 = 主題（章節）邊界（章節最後一句）
+
+評估慣例對齊其 `postprocess_predictions.py` 的 para_level 作法：把 -100
+位置**成對剔除**後，只在段落末句序列上計算 Pk/WD/F1（本 repo 的
+lit_module 於 val/test 以 `labels != -100` 過濾，見 src/eval/metrics.py）。
 """
 
 from __future__ import annotations
@@ -27,11 +32,18 @@ from .corruption import CorruptionOutput, SpecialIds, corrupt_document
 class DocExample:
     doc_id: str
     sentences: list[str]
-    labels: Optional[list[int]]  # 1 = 段落最後一句；無標註為 None
+    labels: Optional[list[int]]  # 三分類 -100/0/1（見模組頂部）；無標註為 None
+
+
+_VALID_LABELS = {-100, 0, 1}
 
 
 def load_jsonl(path: str, labeled: bool = True, max_docs: Optional[int] = None) -> list[DocExample]:
-    """讀取 SpokenNLP 格式 jsonl：每行 {"sentences": [...], "labels": ["0"/"1", ...]}。"""
+    """讀取 SpokenNLP 格式 jsonl：每行 {"sentences": [...], "labels": [...]}。
+
+    labels 允許三種值：-100（段落內非末句，忽略）、0（段落末句非主題邊界）、
+    1（主題邊界）。其他值直接報錯，避免標籤慣例悄悄跑掉。
+    """
     docs: list[DocExample] = []
     with open(path) as f:
         for line_no, line in enumerate(f):
@@ -43,6 +55,11 @@ def load_jsonl(path: str, labeled: bool = True, max_docs: Optional[int] = None) 
             if labeled:
                 labels = [int(v) for v in obj["labels"]]
                 assert len(labels) == len(sents)
+                bad = set(labels) - _VALID_LABELS
+                assert not bad, (
+                    f"{path} 第 {line_no} 行含非法標籤值 {bad}；"
+                    f"合法值僅 -100/0/1（SpokenNLP 三分類，見模組頂部註解）"
+                )
             docs.append(DocExample(str(obj.get("example_id", line_no)), sents, labels))
     return docs
 

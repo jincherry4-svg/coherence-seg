@@ -4,8 +4,11 @@
 標籤對齊，輸出學生（殘缺文件＋候選區）與教師（完整文件）兩份序列。
 
 本模組刻意只依賴 numpy，不依賴 transformers，以便單元測試離線執行。
-標籤慣例（與 SpokenNLP EMNLP 2023 一致）：labels[i] == 1 代表第 i 句是
-「段落最後一句」（B-EOP）；0 代表非邊界。
+標籤慣例（與 SpokenNLP EMNLP 2023 一致，三分類，出處：
+emnlp2023-topic_segmentation/src/preprocess_data.py 的 tokenize_method）：
+labels[i] == 1  代表第 i 句是「主題（章節）最後一句」＝主題邊界；
+labels[i] == 0  代表段落最後一句但非主題邊界；
+labels[i] == -100 代表段落內非末句，一律忽略（不計 loss、不進評估）。
 """
 
 from __future__ import annotations
@@ -143,10 +146,14 @@ def corrupt_document(
         return None
 
     # --- 標籤與 mask 對齊（§4.1 步驟 6）---
+    # 三分類慣例（SpokenNLP preprocess_data.py）：-100 = 段落內非末句（忽略）、
+    # 0 = 段落末句但非主題邊界、1 = 主題邊界。
+    # seg_mask = 1 僅限「非槽位、有標註、且 label 為 0/1」的位置；
+    # label 為 -100 的位置必須排除於分割 loss（否則 -100 會被當成 BCE 目標值污染訓練）。
     seg_labels: list[int] = []
     seg_mask: list[int] = []
     for i in range(n):
-        if is_slot[i] or not has_labels:
+        if is_slot[i] or not has_labels or int(labels[i]) == -100:
             seg_labels.append(-100)
             seg_mask.append(0)
         else:
