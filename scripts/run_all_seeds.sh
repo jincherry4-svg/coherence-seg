@@ -3,7 +3,11 @@
 # 用法：bash scripts/run_all_seeds.sh configs/m2_reorder.yaml [configs/lab_1080ti.yaml]
 set -e
 CONFIGS=("$@")
-NAME=$(IFS=-; parts=(); for c in "${CONFIGS[@]}"; do parts+=("$(basename "$c" .yaml)"); done; echo "${parts[*]}")
+# NAME 只取第一個 config（里程碑），與 src/train.py 的 exp_tag 定義完全對齊。
+# 舊行為把設備 config 也串進去，導致 DONE 標記寫到 m0_baseline-lab_1080ti/ 之類的
+# 目錄，而實際 checkpoint 卻在 m0_baseline/ ——兩棵目錄樹分家，跳過/重跑判斷全錯
+#（見 DEBUG_HANDOFF_REPORT.md 殘留問題、IMPLEMENTATION_SPEC.md §12 陷阱 16）。
+NAME=$(basename "${CONFIGS[0]}" .yaml)
 MARK_DIR=${CKPT_DIR:-/content/drive/MyDrive/LongformerSC/coherence-seg/checkpoints}/$NAME
 for SEED in 42 43 44 45 46; do
   MARK="$MARK_DIR/seed$SEED/DONE"
