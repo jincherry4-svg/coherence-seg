@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from collections import deque
 
 import pytorch_lightning as pl
@@ -22,8 +24,6 @@ from ..losses import (
     sigmoid_rampup,
 )
 from ..eval.metrics import pk_wd_spokennlp, scan_threshold
-from .ema import EmaTeacher
-from .encoder import SegmentationModel
 
 
 class SegLitModule(pl.LightningModule):
@@ -31,20 +31,30 @@ class SegLitModule(pl.LightningModule):
         super().__init__()
         self.cfg = cfg
         self.curriculum = curriculum
+        
+        # 延遲匯入避免循環參照
+        from .encoder import SegmentationModel
         self.model = SegmentationModel(
             model_name=cfg.model.name,
             tokenizer_size=tokenizer_size,
             dropout=cfg.model.dropout,
             gradient_checkpointing=cfg.model.gradient_checkpointing,
         )
-        self.teacher = (
-            EmaTeacher(self.model, max_decay=cfg.mean_teacher.max_decay)
-            if cfg.flags.use_mean_teacher
-            else None
-        )
+        
+        if cfg.flags.use_mean_teacher:
+            from .ema import EmaTeacher
+            self.teacher = EmaTeacher(self.model, max_decay=cfg.mean_teacher.max_decay)
+        else:
+            self.teacher = None
+            
         self._reorder_acc_window = deque(maxlen=cfg.curriculum.acc_window)
         self._val_probs: list[list[float]] = []
         self._val_refs: list[list[int]] = []
+        
+        # 新增：測試集快取容器
+        self._test_probs: list[list[float]] = []
+        self._test_refs: list[list[int]] = []
+        
         self.save_hyperparameters({"cfg": dict(cfg)})
 
     # ---------- loss 組件 ----------
@@ -68,9 +78,6 @@ class SegLitModule(pl.LightningModule):
         )
 
     def _batch_losses(self, batch, labeled: bool):
-        """回傳 loss dict。labeled=False 時不計 L_seg；
-        且僅在 flags.unlabeled_reorder=True 時才對無標註 batch 計 L_reorder
-        （M3 的無標註資料只透過一致性損失貢獻，M4 才全開）。"""
         compute_reorder = self.cfg.flags.use_reorder and (
             labeled or self.cfg.flags.get("unlabeled_reorder", False)
         )
@@ -105,7 +112,7 @@ class SegLitModule(pl.LightningModule):
         lam1 = sigmoid_rampup(step, self.cfg.loss.lambda1_ramp_steps, self.cfg.loss.lambda1_max)
         lam2 = sigmoid_rampup(step, self.cfg.loss.lambda2_ramp_steps, self.cfg.loss.lambda2_max)
 
-        if isinstance(batch, dict) and "labeled" in batch:  # CombinedLoader（M3+）
+        if isinstance(batch, dict) and "labeled" in batch:
             labeled_batch, unlabeled_batch = batch["labeled"], batch.get("unlabeled")
         else:
             labeled_batch, unlabeled_batch = batch, None
@@ -127,15 +134,13 @@ class SegLitModule(pl.LightningModule):
                        "train/p_stage": float(self.curriculum.stage.value) if self.curriculum else 0.0})
         self._maybe_advance_curriculum()
 
-        # 【防彈級安全鎖】防止特定 Batch 因無效標籤導致 total 失去 grad_fn 觸發暴斃
+        # 【防彈安全鎖】防止 total 失去 grad_fn 觸發暴斃
         if total.grad_fn is None:
-            # 尋找模型中任何一個需要梯度的參數，將其乘上 0.0 注入 total
-            # 這樣數值完全保持不變，但能強制幫 total 接回 PyTorch 的反向傳播計算圖中
             for param in self.parameters():
                 if param.requires_grad:
                     total = total + (param.sum() * 0.0)
                     break
-        
+
         return total
 
     def on_train_batch_end(self, *args, **kwargs):
@@ -144,7 +149,6 @@ class SegLitModule(pl.LightningModule):
             self.log("train/ema_decay", d)
 
     def _maybe_advance_curriculum(self):
-        """重組準確率移動平均 > 門檻時升級挖空難度（§6），並清空視窗。"""
         if self.curriculum is None or not self.cfg.flags.use_reorder:
             return
         w = self._reorder_acc_window
@@ -153,6 +157,8 @@ class SegLitModule(pl.LightningModule):
                 new_stage = self.curriculum.advance()
                 w.clear()
                 self.log("train/curriculum_stage", float(new_stage))
+
+    # ---------- 驗證循環 ----------
 
     def validation_step(self, batch, batch_idx):
         if not batch:
@@ -175,7 +181,91 @@ class SegLitModule(pl.LightningModule):
         t, res = scan_threshold(self._val_probs, self._val_refs)
         self.log_dict({f"val/{k}": v for k, v in res.items()})
         self.log("val/best_threshold", t)
+        self.best_val_threshold = t  # 紀錄最佳門檻供測試集固定使用
         self._val_probs, self._val_refs = [], []
+
+    # ---------- 新增：測試循環（RUNBOOK 第 4 步要求） ----------
+
+    def test_step(self, batch, batch_idx):
+        if not batch:
+            return
+        out = self.model(
+            batch["input_ids"], batch["attention_mask"], batch["global_attention_mask"],
+            batch["sent_anchor_idx"],
+        )
+        probs = torch.sigmoid(out["boundary_logits"])
+        for b in range(probs.size(0)):
+            valid = batch["sent_anchor_idx"][b] != -1
+            labels = batch["seg_labels"][b][valid]
+            keep = labels != -100
+            self._test_probs.append(probs[b][valid][keep].float().cpu().tolist())
+            self._test_refs.append(labels[keep].cpu().tolist())
+
+    def on_test_epoch_end(self):
+        if not self._test_probs:
+            return
+
+        # 規格書 §8：固定使用驗證集掃描出的門檻，若無則預設 0.5
+        t = getattr(self, "best_val_threshold", 0.5)
+        preds = [[int(p > t) for p in doc] for doc in self._test_probs]
+
+        # 1. 計算整體指標
+        res = pk_wd_spokennlp(preds, self._test_refs)
+        self.log_dict({f"test/{k}": v for k, v in res.items()})
+
+        # 2. 計算逐篇 per_doc_pk 列表（含短文本安全保護鎖）
+        from ..eval.metrics import labels_to_mass, _segeval_pk, HAS_SEGEVAL, reference_pk, _segeval_window_size
+        per_doc_pk = []
+        for pred, ref in zip(preds, self._test_refs):
+            hyp_mass, ref_mass = labels_to_mass(pred), labels_to_mass(ref)
+            if sum(hyp_mass) != sum(ref_mass) or sum(ref_mass) == 0:
+                per_doc_pk.append(1.0)
+                continue
+            k_size = _segeval_window_size(ref_mass)
+            if sum(ref_mass) <= k_size:
+                per_doc_pk.append(0.0)
+            else:
+                try:
+                    if HAS_SEGEVAL:
+                        per_doc_pk.append(float(_segeval_pk(hyp_mass, ref_mass)))
+                    else:
+                        per_doc_pk.append(reference_pk(hyp_mass, ref_mass))
+                except Exception:
+                    per_doc_pk.append(0.0)
+
+        # 3. 取得 Config 名稱與 Seed 資訊
+        config_name = "config"
+        if hasattr(self.cfg, "config_name"):
+            config_name = self.cfg.config_name
+        elif isinstance(self.cfg, dict) and "config_name" in self.cfg:
+            config_name = self.cfg["config_name"]
+        elif hasattr(self.cfg, "model") and hasattr(self.cfg.model, "name"):
+            config_name = self.cfg.model.name
+
+        config_name = os.path.basename(str(config_name)).replace(".yaml", "")
+        seed = self.cfg.get("seed", 42) if isinstance(self.cfg, dict) else getattr(self.cfg, "seed", 42)
+
+        # 4. 封裝格式對齊 src/eval/aggregate.py 的 JSON 檔案
+        output_data = {
+            "config": config_name,
+            "seed": seed,
+            "pk": res["pk"],
+            "wd": res["wd"],
+            "f1": res["f1"],
+            "precision": res["precision"],
+            "recall": res["recall"],
+            "per_doc_pk": per_doc_pk
+        }
+
+        os.makedirs("results", exist_ok=True)
+        out_path = f"results/{config_name}_seed{seed}.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, ensure_ascii=False, indent=4)
+
+        print(f"\n🎉 [TEST COMPLETE] 測試結果已成功彙整並寫入: {out_path}")
+        self._test_probs, self._test_refs = [], []
+
+    # ---------- 優化器與排程 ----------
 
     def configure_optimizers(self):
         opt = torch.optim.AdamW(
@@ -197,7 +287,10 @@ class SegLitModule(pl.LightningModule):
     def on_save_checkpoint(self, ckpt):
         if self.curriculum is not None:
             ckpt["curriculum"] = self.curriculum.state_dict()
+        ckpt["best_val_threshold"] = getattr(self, "best_val_threshold", 0.5)
 
     def on_load_checkpoint(self, ckpt):
         if self.curriculum is not None and "curriculum" in ckpt:
             self.curriculum.load_state_dict(ckpt["curriculum"])
+        if "best_val_threshold" in ckpt:
+            self.best_val_threshold = ckpt["best_val_threshold"]
