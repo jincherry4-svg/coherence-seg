@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import inspect
 import os
 
 import pytorch_lightning as pl
@@ -57,6 +58,21 @@ def build_loaders(cfg, tokenizer, ids, seed):
         # 無標註 loader 與 labeled 共用 curriculum
         loaders["unlabeled"] = mk(mk_ds(un_docs, train_ctrl), True, need_clean)
     return loaders, train_ctrl
+
+
+def _allowlist_omegaconf_globals():
+    """PyTorch 2.6 起 torch.load 預設 weights_only=True，會拒絕反序列化 checkpoint 內的
+    OmegaConf 物件。舊 checkpoint 的超參數夾帶 DictConfig，這裡明確允許這些「本專案自己
+    寫入的可信類別」，作為 weights_only=False 之外的備援載入路徑。"""
+    try:
+        import torch.serialization as _ts
+        from omegaconf import DictConfig, ListConfig
+        from omegaconf.base import ContainerMetadata, Metadata
+        from omegaconf.nodes import AnyNode, ValueNode
+        _ts.add_safe_globals([DictConfig, ListConfig, ContainerMetadata, Metadata,
+                              AnyNode, ValueNode, dict, list])
+    except Exception:
+        pass
 
 
 def _find_last_ckpt(ckpt_dir):
@@ -200,8 +216,18 @@ def main():
     else:
         train_loader = loaders["train"]
 
-    trainer.fit(module, train_loader, loaders["val"], ckpt_path=ckpt_path)
-    trainer.test(module, loaders["test"], ckpt_path="best")
+    # 續訓載入：這顆 checkpoint 是使用者自己訓練的可信檔案，故用 weights_only=False
+    # 讓 torch.load 能還原內含的 OmegaConf 超參數（PyTorch 2.6 預設 True 會擋）。
+    # 先註冊 OmegaConf 安全類別作為備援；再依 Lightning 版本決定是否傳 weights_only。
+    _allowlist_omegaconf_globals()
+    fit_kwargs = {}
+    if "weights_only" in inspect.signature(trainer.fit).parameters:
+        fit_kwargs["weights_only"] = False
+    trainer.fit(module, train_loader, loaders["val"], ckpt_path=ckpt_path, **fit_kwargs)
+    test_kwargs = {}
+    if "weights_only" in inspect.signature(trainer.test).parameters:
+        test_kwargs["weights_only"] = False
+    trainer.test(module, loaders["test"], ckpt_path="best", **test_kwargs)
 
 
 if __name__ == "__main__":
