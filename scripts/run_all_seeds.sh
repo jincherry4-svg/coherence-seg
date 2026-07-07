@@ -4,7 +4,7 @@
 set -e
 CONFIGS=("$@")
 NAME=$(IFS=-; parts=(); for c in "${CONFIGS[@]}"; do parts+=("$(basename "$c" .yaml)"); done; echo "${parts[*]}")
-MARK_DIR=${CKPT_DIR:-/content/drive/MyDrive/coherence-seg/checkpoints}/$NAME
+MARK_DIR=${CKPT_DIR:-/content/drive/MyDrive/LongformerSC/coherence-seg/checkpoints}/$NAME
 for SEED in 42 43 44 45 46; do
   MARK="$MARK_DIR/seed$SEED/DONE"
   if [ -f "$MARK" ]; then echo "seed $SEED 已完成，跳過"; continue; fi
