@@ -150,34 +150,6 @@ def resolve_resume(cfg, exp_tag, seed, want_resume):
     return None, ckpt_dir
 
 
-def resolve_best_ckpt(trainer, ckpt_dir):
-    """把 trainer.test(ckpt_path="best") 要用的 best checkpoint 解析成一個「確實存在」的路徑。
-
-    問題：ModelCheckpoint.best_model_path 是存進 checkpoint 的絕對路徑；當 checkpoint 資料夾
-    被搬移（例如加上 MyDrive/LongformerSC 前綴）後，續訓還原出來的這個絕對路徑會失效。
-    策略：原路徑存在就用它；否則用同一個檔名到目前正確的 ckpt_dir 找回來；再不行退回 last.ckpt；
-    都沒有就回 None（改用當前記憶體中的權重測試，不中斷流程）。
-    """
-    cb = getattr(trainer, "checkpoint_callback", None)
-    best = (getattr(cb, "best_model_path", "") or "") if cb is not None else ""
-
-    if best and os.path.exists(best):
-        print(f"[test] 使用 best checkpoint：{best}")
-        return best
-    if best:
-        relocated = os.path.join(ckpt_dir, os.path.basename(best))
-        if os.path.exists(relocated):
-            print(f"[test] best 原路徑失效（{best}）→ 已在現行 ckpt_dir 重新定位：{relocated}")
-            return relocated
-        print(f"[test] ⚠️  best 原路徑失效且無法重新定位：{best}")
-    last = _find_last_ckpt(ckpt_dir)
-    if last:
-        print(f"[test] 退回使用 last.ckpt 進行測試：{last}")
-        return last
-    print("[test] ⚠️  找不到任何 checkpoint，改用當前記憶體中的權重進行測試。")
-    return None
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, nargs="+",
@@ -199,6 +171,13 @@ def main():
     run_tag = "-".join(os.path.basename(c).replace(".yaml", "") for c in args.config)
     exp_tag = os.path.basename(args.config[0]).replace(".yaml", "")
     seed = args.seed if args.seed is not None else cfg.seed
+    # 【重要】把實驗身分注入 cfg，供 lit_module 的 on_test_epoch_end 寫 results JSON 使用：
+    # - cfg.config_name：不注入的話會退回 cfg.model.name（例如 longformer-base-4096），
+    #   M0/M2/M3/M4 的結果檔名撞在一起互相覆蓋，aggregate 無法分辨里程碑。
+    # - cfg.seed：不回寫的話，--seed 43/44/... 跑出來的 JSON 仍讀 base.yaml 的預設 seed，
+    #   五個 seed 的結果全寫到同一個 _seed42.json 互相覆蓋。
+    cfg.config_name = exp_tag
+    cfg.seed = seed
     pl.seed_everything(seed, workers=True)
 
     tokenizer = build_tokenizer(cfg)
@@ -255,11 +234,7 @@ def main():
     test_kwargs = {}
     if "weights_only" in inspect.signature(trainer.test).parameters:
         test_kwargs["weights_only"] = False
-    best_ckpt = resolve_best_ckpt(trainer, ckpt_dir)
-    if best_ckpt is not None:
-        trainer.test(module, loaders["test"], ckpt_path=best_ckpt, **test_kwargs)
-    else:
-        trainer.test(module, loaders["test"], **test_kwargs)
+    trainer.test(module, loaders["test"], ckpt_path="best", **test_kwargs)
 
 
 if __name__ == "__main__":
