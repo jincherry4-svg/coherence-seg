@@ -90,8 +90,9 @@ def resolve_resume(cfg, exp_tag, seed, want_resume):
     與 ModelCheckpoint 的 dirpath 一致，確保存檔與續訓永遠指向同一處。
 
     設計原則：
-    - exp_tag 只取里程碑 config（不含設備 config），所以同一實驗換設備、斷線重連，
-      資料夾名都固定為 {ckpt_dir}/{里程碑}/seed{seed}，續訓才找得回來。
+    - exp_tag = 里程碑 config + 資料集後綴（不含設備 config），所以同一實驗換設備、
+      斷線重連，資料夾名都固定為 {ckpt_dir}/{里程碑[+資料集]}/seed{seed}，續訓才找得回來；
+      但換資料集（例如 disease→city）視為不同實驗身分，各自獨立目錄，不會互撞。
     - 找不到時「大聲」印警告並掃描其他可能的根目錄，把真正的 checkpoint 位置攤在眼前，
       但**仍回傳 None 從頭開始**——因為 run_all_seeds.sh 對每個 seed 都無條件帶 --resume，
       報錯中止會害整批多 seed 掛掉。
@@ -150,6 +151,30 @@ def resolve_resume(cfg, exp_tag, seed, want_resume):
     return None, ckpt_dir
 
 
+def compute_exp_tag(config_paths: list[str]) -> str:
+    """由 --config 疊加序列算出實驗身分標籤（供 checkpoint 目錄與 results JSON 命名）。
+
+    規則：milestone（config_paths[0]，依慣例里程碑一律排第一）+ 每個
+    configs/data_*.yaml 的資料集後綴（去掉 data_ 前綴），以 '+' 串接。
+    設備 config（如 lab_1080ti.yaml）不影響 exp_tag——同一實驗換設備、
+    斷線重連，資料夾名必須不變才找得回 checkpoint；不疊加 data_*.yaml 時
+    沿用預設資料集（base.yaml 的 wiki_section_disease），不加後綴，與既有
+    disease 結果／checkpoint 完全相容。
+
+    範例：
+        ["configs/m2_reorder.yaml"] → "m2_reorder"
+        ["configs/m2_reorder.yaml", "configs/lab_1080ti.yaml"] → "m2_reorder"（設備不影響）
+        ["configs/m2_reorder.yaml", "configs/data_city.yaml"] → "m2_reorder+city"
+    """
+    milestone_tag = os.path.basename(config_paths[0]).replace(".yaml", "")
+    data_tags = [
+        os.path.basename(c).replace(".yaml", "").replace("data_", "", 1)
+        for c in config_paths
+        if os.path.basename(c).startswith("data_")
+    ]
+    return milestone_tag + ("+" + "+".join(data_tags) if data_tags else "")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, nargs="+",
@@ -166,10 +191,11 @@ def main():
     if os.environ.get("CKPT_DIR"):
         cfg.ckpt_dir = os.environ["CKPT_DIR"]
     # run_tag：完整（含設備）→ 只用於 wandb 顯示，看得出這個 run 跑在哪個設備。
-    # exp_tag：只取里程碑 config（args.config[0]，依 docstring 慣例里程碑一律排第一）
-    #          → 用於 checkpoint 資料夾。設備不同不該改變實驗身分，否則續訓找不回來。
+    # exp_tag：里程碑 + 資料集後綴（見 compute_exp_tag）→ 用於 checkpoint 資料夾與
+    #          results JSON 命名。設備不同不該改變實驗身分；資料集不同則視為不同
+    #          實驗身分，各自獨立、不互撞。
     run_tag = "-".join(os.path.basename(c).replace(".yaml", "") for c in args.config)
-    exp_tag = os.path.basename(args.config[0]).replace(".yaml", "")
+    exp_tag = compute_exp_tag(args.config)
     seed = args.seed if args.seed is not None else cfg.seed
     # 【重要】把實驗身分注入 cfg，供 lit_module 的 on_test_epoch_end 寫 results JSON 使用：
     # - cfg.config_name：不注入的話會退回 cfg.model.name（例如 longformer-base-4096），

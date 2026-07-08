@@ -1,0 +1,9 @@
+# wiki_section_city 資料集覆寫（規格書 §3.1 擴充）。
+# 疊加用法：python -m src.train --config configs/m2_reorder.yaml configs/data_city.yaml
+# 只覆寫 data.{train,dev,test}_path；其餘（model/loss/optim/flags 等）沿用里程碑 config。
+# 注意：city 的 test 集文件數遠多於 disease（3893 vs 718），訓練/評估時間會拉長數倍，
+# 排程時要留意（見 RUNBOOK 第 2 步、PROJECT_MASTER_PLAN.md Phase C）。
+data:
+  train_path: /content/data/wiki_section_city/train.jsonl
+  dev_path: /content/data/wiki_section_city/dev.jsonl
+  test_path: /content/data/wiki_section_city/test.jsonl
