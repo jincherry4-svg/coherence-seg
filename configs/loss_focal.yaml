@@ -1,0 +1,9 @@
+# 【ablation 用】focal loss + 類別加權（本專案早期的預設值）。
+# 疊加用法：python -m src.train --config configs/m0_baseline.yaml configs/loss_focal.yaml
+# 注意：這會造成邊界機率整體偏高、過度切分（WD 膨脹），與 SpokenNLP baseline
+# 不可直接比較——只用於「loss 設計對指標的影響」這類 ablation 分析。
+loss:
+  seg_type: focal
+  focal_gamma: 2.0
+  focal_alpha: 0.75
+  pos_weight: 8.0

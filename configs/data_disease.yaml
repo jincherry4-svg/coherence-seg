@@ -1,0 +1,8 @@
+# wiki_section_disease 資料集（顯式選擇版）。
+# disease 是 base.yaml 的預設資料集，本檔存在的目的：讓指令列「明確可見」用哪個資料集。
+# exp_tag 不加後綴（disease 為預設身分），與不帶本檔的既有結果/checkpoint 完全相容。
+data:
+  name: disease
+  train_path: /content/data/wiki_section_disease/train.jsonl
+  dev_path: /content/data/wiki_section_disease/dev.jsonl
+  test_path: /content/data/wiki_section_disease/test.jsonl

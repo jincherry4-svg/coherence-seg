@@ -1,0 +1,9 @@
+# 【ablation 用】長上下文 4096（Longformer 完整長度）。
+# 疊加用法：python -m src.train --config configs/m2_reorder.yaml configs/len4096.yaml
+# 注意 VRAM：4096×bs1 約需 11-12GB，1080 Ti 極限邊緣；建議 A100/L4 跑。
+# 研究問題：相對論文的 2048，完整 4096 上下文對長文件分割是否有增益。
+data:
+  max_len: 4096
+  batch_size: 1
+train:
+  grad_accum: 8

@@ -21,15 +21,17 @@ def test_reconstruction_equals_original(ids, seed):
 
 
 def test_label_alignment_and_mask(ids, rng):
-    """測試 2：槽位 seg_mask=0 / seg_labels=-100；非槽位標籤一致；無標註全 0。"""
+    """測試 2：槽位 seg_mask=0 / seg_labels=-100；非槽位標籤=移交後有效標籤；無標註全 0。"""
+    from tests.conftest import expected_effective_labels
     sents, labels = make_doc(rng, 30)
     out = corrupt_document(sents, labels, ids, rng, p=0.2)
     assert out.n_sentences == 30 and out.m_slots > 0
+    eff = expected_effective_labels(labels, out.is_slot)
     for i in range(30):
         if out.is_slot[i]:
             assert out.seg_labels[i] == -100 and out.seg_mask[i] == 0
         else:
-            assert out.seg_labels[i] == labels[i] and out.seg_mask[i] == 1
+            assert out.seg_labels[i] == eff[i] and out.seg_mask[i] == 1
     out_u = corrupt_document(sents, None, ids, rng, p=0.2)
     assert all(v == 0 for v in out_u.seg_mask)
     assert all(v == -100 for v in out_u.seg_labels)

@@ -150,14 +150,28 @@ def corrupt_document(
     # 0 = 段落末句但非主題邊界、1 = 主題邊界。
     # seg_mask = 1 僅限「非槽位、有標註、且 label 為 0/1」的位置；
     # label 為 -100 的位置必須排除於分割 loss（否則 -100 會被當成 BCE 目標值污染訓練）。
+    #
+    # 【邊界標籤移交】若被挖走的是主題邊界句（label==1），挖空後主題轉換點
+    # 實際上落在它前一個「保留」句之後——若不處理，該保留句 label 仍為 0 且
+    # mask=1，等於在教模型「主題轉換前一句不是邊界」這個錯誤答案。
+    # 因此把邊界資訊移交給前一個最近的非槽位句（覆寫其 label 為 1）。
+    effective_labels = list(labels) if has_labels else None
+    if has_labels:
+        for i in range(n):
+            if i in selected_set and int(labels[i]) == 1:
+                j = i - 1
+                while j >= 0 and j in selected_set:
+                    j -= 1
+                if j >= 0:
+                    effective_labels[j] = 1
     seg_labels: list[int] = []
     seg_mask: list[int] = []
     for i in range(n):
-        if is_slot[i] or not has_labels or int(labels[i]) == -100:
+        if is_slot[i] or not has_labels or int(effective_labels[i]) == -100:
             seg_labels.append(-100)
             seg_mask.append(0)
         else:
-            seg_labels.append(int(labels[i]))
+            seg_labels.append(int(effective_labels[i]))
             seg_mask.append(1)
 
     return CorruptionOutput(

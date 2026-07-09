@@ -36,21 +36,23 @@ def make_three_class_doc(rng: np.random.Generator, n_paras: int = 6, para_len: i
 
 def test_seg_mask_excludes_ignore_and_slots(ids):
     """使用者指定情境：同篇含 -100 與 0/1，挖空後——
-    -100 位置與槽位 seg_mask == 0；0/1 非槽位 seg_mask == 1。"""
+    -100 位置與槽位 seg_mask == 0；0/1 非槽位 seg_mask == 1（值為移交後有效標籤）。"""
+    from tests.conftest import expected_effective_labels
     rng = np.random.default_rng(11)
     sents, labels = make_three_class_doc(rng)
     assert -100 in labels and 0 in labels and 1 in labels  # 三種值都要在場
     out = corrupt_document(sents, labels, ids, rng, p=0.25)
     assert out is not None and out.m_slots > 0
+    eff = expected_effective_labels(labels, out.is_slot)
     for i in range(out.n_sentences):
-        orig = labels[out.student_to_clean_sent_map[i]]
+        e = eff[out.student_to_clean_sent_map[i]]
         if out.is_slot[i]:
             assert out.seg_mask[i] == 0 and out.seg_labels[i] == -100
-        elif orig == -100:
+        elif e == -100:
             # 核心修復點：-100 非槽位不得計入分割 loss
             assert out.seg_mask[i] == 0 and out.seg_labels[i] == -100
         else:
-            assert out.seg_mask[i] == 1 and out.seg_labels[i] == orig
+            assert out.seg_mask[i] == 1 and out.seg_labels[i] == e
 
 
 def test_load_jsonl_accepts_minus100_rejects_others(tmp_path):

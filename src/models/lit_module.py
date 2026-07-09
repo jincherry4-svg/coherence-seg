@@ -186,9 +186,15 @@ class SegLitModule(pl.LightningModule):
     def on_validation_epoch_end(self):
         if not self._val_probs:
             return
+        print(f"\n[eval] 驗證集有效評估文件數：{len(self._val_probs)}")
         t, res = scan_threshold(self._val_probs, self._val_refs)
         self.log_dict({f"val/{k}": v for k, v in res.items()})
         self.log("val/best_threshold", t)
+        # 對照組：固定 0.5（等同論文的 argmax 決策）。掃描版與 0.5 版差距過大
+        # 代表模型校準有問題，是重要診斷訊號。
+        res05 = pk_wd_spokennlp(
+            [[int(p > 0.5) for p in doc] for doc in self._val_probs], self._val_refs)
+        self.log_dict({f"val/{k}_fixed05": v for k, v in res05.items()})
         self.best_val_threshold = t  # 紀錄最佳門檻供測試集固定使用
         self._val_probs, self._val_refs = [], []
 
@@ -213,13 +219,18 @@ class SegLitModule(pl.LightningModule):
         if not self._test_probs:
             return
 
+        print(f"\n[eval] 測試集有效評估文件數：{len(self._test_probs)}"
+              f"（disease 全集應為 718 篇；顯著少於此數 = 有文件被丟棄，檢查截斷邏輯）")
         # 規格書 §8：固定使用驗證集掃描出的門檻，若無則預設 0.5
         t = getattr(self, "best_val_threshold", 0.5)
         preds = [[int(p > t) for p in doc] for doc in self._test_probs]
 
-        # 1. 計算整體指標
+        # 1. 計算整體指標（掃描門檻版 + 固定 0.5 對照版）
         res = pk_wd_spokennlp(preds, self._test_refs)
         self.log_dict({f"test/{k}": v for k, v in res.items()})
+        res05 = pk_wd_spokennlp(
+            [[int(p > 0.5) for p in doc] for doc in self._test_probs], self._test_refs)
+        self.log_dict({f"test/{k}_fixed05": v for k, v in res05.items()})
 
         # 2. 計算逐篇 per_doc_pk 列表（含短文本安全保護鎖）
         from ..eval.metrics import labels_to_mass, _segeval_pk, HAS_SEGEVAL, reference_pk, _segeval_window_size
@@ -262,7 +273,9 @@ class SegLitModule(pl.LightningModule):
             "f1": res["f1"],
             "precision": res["precision"],
             "recall": res["recall"],
-            "per_doc_pk": per_doc_pk
+            "per_doc_pk": per_doc_pk,
+            "threshold": t,
+            "fixed05": {k: res05[k] for k in ("pk", "wd", "f1", "precision", "recall")}
         }
 
         os.makedirs("results", exist_ok=True)

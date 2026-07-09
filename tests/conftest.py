@@ -47,3 +47,18 @@ def make_doc(rng: np.random.Generator, n: int, min_len=3, max_len=12):
     labels = rng.integers(0, 2, size=n).tolist()
     labels[-1] = 1  # 文件最後一句必為段落結尾
     return sents, labels
+
+
+def expected_effective_labels(labels, is_slot):
+    """複製 corruption.py 的【邊界標籤移交】規則，供測試對照：
+    被挖走的邊界句（label==1）把邊界資訊移交給前一個最近的非槽位句。"""
+    eff = [int(v) for v in labels]
+    n = len(eff)
+    for i in range(n):
+        if is_slot[i] and int(labels[i]) == 1:
+            j = i - 1
+            while j >= 0 and is_slot[j]:
+                j -= 1
+            if j >= 0:
+                eff[j] = 1
+    return eff

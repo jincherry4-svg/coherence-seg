@@ -151,28 +151,53 @@ def resolve_resume(cfg, exp_tag, seed, want_resume):
     return None, ckpt_dir
 
 
-def compute_exp_tag(config_paths: list[str]) -> str:
-    """由 --config 疊加序列算出實驗身分標籤（供 checkpoint 目錄與 results JSON 命名）。
+def compute_exp_tag(config_paths: list[str], data_name: str = "disease") -> str:
+    """由 --config 疊加序列 + 合併後 cfg.data.name 算出實驗身分標籤。
 
-    規則：milestone（config_paths[0]，依慣例里程碑一律排第一）+ 每個
-    configs/data_*.yaml 的資料集後綴（去掉 data_ 前綴），以 '+' 串接。
-    設備 config（如 lab_1080ti.yaml）不影響 exp_tag——同一實驗換設備、
-    斷線重連，資料夾名必須不變才找得回 checkpoint；不疊加 data_*.yaml 時
-    沿用預設資料集（base.yaml 的 wiki_section_disease），不加後綴，與既有
-    disease 結果／checkpoint 完全相容。
+    規則：milestone（config_paths[0]，依慣例里程碑一律排第一）+ 資料集後綴。
+    資料集後綴的**唯一真相來源是合併後的 cfg.data.name**：
+    - data_name == "disease"（預設）→ 不加後綴，與既有 disease 結果/checkpoint 相容
+    - 其他（如 "city"）→ 附加 "+city"
+    設備 config（如 lab_1080ti.yaml）不影響 exp_tag。
 
     範例：
-        ["configs/m2_reorder.yaml"] → "m2_reorder"
-        ["configs/m2_reorder.yaml", "configs/lab_1080ti.yaml"] → "m2_reorder"（設備不影響）
-        ["configs/m2_reorder.yaml", "configs/data_city.yaml"] → "m2_reorder+city"
+        (["configs/m2_reorder.yaml"], "disease") → "m2_reorder"
+        (["configs/m2_reorder.yaml", "configs/data_city.yaml"], "city") → "m2_reorder+city"
     """
     milestone_tag = os.path.basename(config_paths[0]).replace(".yaml", "")
-    data_tags = [
-        os.path.basename(c).replace(".yaml", "").replace("data_", "", 1)
-        for c in config_paths
-        if os.path.basename(c).startswith("data_")
-    ]
-    return milestone_tag + ("+" + "+".join(data_tags) if data_tags else "")
+    if data_name and data_name != "disease":
+        return f"{milestone_tag}+{data_name}"
+    return milestone_tag
+
+
+def print_data_diagnostics(cfg):
+    """開機大聲印出「本次到底用哪個資料集」，並交叉檢查 name 與路徑是否一致。
+
+    背景：曾發生操作者以為在跑 city、實際讀的是 disease 路徑，兩份結果數字
+    幾乎相同才驚覺（Pk 17.32 vs 17.39）。
+    """
+    name = cfg.data.get("name", "（未設定！請在 config 的 data.name 指定）")
+    print("=" * 68)
+    print(f"[data] 資料集身分（cfg.data.name）：{name}")
+    for k in ("train_path", "dev_path", "test_path"):
+        p = cfg.data.get(k)
+        exists = "✅ 存在" if (p and os.path.isfile(p)) else "❌ 找不到檔案"
+        print(f"[data] {k:10s}: {p}  {exists}")
+    tp = cfg.data.get("train_path")
+    if tp and os.path.isfile(tp):
+        try:
+            import json as _json
+            with open(tp) as f:
+                first = _json.loads(f.readline())
+            uniq = sorted(set(int(v) for v in first.get("labels", [])))
+            print(f"[data] train 首篇：{len(first.get('sentences', []))} 句，標籤獨特值 {uniq}"
+                  f"（合法：-100/0/1 的子集）")
+        except Exception as e:
+            print(f"[data] ⚠️ 首篇標籤檢查失敗：{e}")
+    if isinstance(name, str) and tp and name not in tp:
+        print(f"[data] ⚠️⚠️ 警告：data.name = '{name}' 沒出現在 train_path 字串中！")
+        print(f"[data] ⚠️⚠️ 極可能是「以為在跑 {name}、實際讀別的資料集」——請停下確認 config。")
+    print("=" * 68)
 
 
 def main():
@@ -181,6 +206,9 @@ def main():
                     help="一個或多個 yaml，依序疊加（里程碑 config 在前、設備 config 在後）")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--eval-only", action="store_true",
+                    help="不訓練：載入既有 checkpoint，重跑 validate（重掃門檻）與 test。"
+                         "用途：改了評估邏輯後，不必重訓即可重測。")
     args = ap.parse_args()
 
     cfg = OmegaConf.load("configs/base.yaml")
@@ -191,12 +219,14 @@ def main():
     if os.environ.get("CKPT_DIR"):
         cfg.ckpt_dir = os.environ["CKPT_DIR"]
     # run_tag：完整（含設備）→ 只用於 wandb 顯示，看得出這個 run 跑在哪個設備。
-    # exp_tag：里程碑 + 資料集後綴（見 compute_exp_tag）→ 用於 checkpoint 資料夾與
-    #          results JSON 命名。設備不同不該改變實驗身分；資料集不同則視為不同
-    #          實驗身分，各自獨立、不互撞。
+    # exp_tag：里程碑 + 資料集後綴（見 compute_exp_tag，依 cfg.data.name 判斷）
+    #          → 用於 checkpoint 資料夾與 results JSON 命名。設備不同不該改變
+    #          實驗身分；資料集不同則視為不同實驗身分，各自獨立、不互撞。
     run_tag = "-".join(os.path.basename(c).replace(".yaml", "") for c in args.config)
-    exp_tag = compute_exp_tag(args.config)
+    exp_tag = compute_exp_tag(args.config, cfg.data.get("name", "disease"))
     seed = args.seed if args.seed is not None else cfg.seed
+    # 開機診斷：大聲印出本次使用的資料集與路徑
+    print_data_diagnostics(cfg)
     # 【重要】把實驗身分注入 cfg，供 lit_module 的 on_test_epoch_end 寫 results JSON 使用：
     # - cfg.config_name：不注入的話會退回 cfg.model.name（例如 longformer-base-4096），
     #   M0/M2/M3/M4 的結果檔名撞在一起互相覆蓋，aggregate 無法分辨里程碑。
@@ -253,6 +283,26 @@ def main():
     # 讓 torch.load 能還原內含的 OmegaConf 超參數（PyTorch 2.6 預設 True 會擋）。
     # 先註冊 OmegaConf 安全類別作為備援；再依 Lightning 版本決定是否傳 weights_only。
     _allowlist_omegaconf_globals()
+
+    if args.eval_only:
+        # 評估模式：不訓練。找 ckpt_dir 裡的 best（非 last 的最新 .ckpt）；
+        # 找不到才退回 last*.ckpt。流程：validate（用當前程式碼的 scan_threshold
+        # 重掃門檻）→ test（沿用 validate 已載入的權重，不重載，避免舊門檻蓋回）。
+        all_ckpts = glob.glob(os.path.join(ckpt_dir, "*.ckpt"))
+        best_cands = [f for f in all_ckpts if not os.path.basename(f).startswith("last")]
+        eval_ckpt = (max(best_cands, key=os.path.getmtime) if best_cands
+                     else _find_last_ckpt(ckpt_dir))
+        assert eval_ckpt, f"--eval-only 但 {ckpt_dir} 沒有任何 .ckpt 可載入"
+        print(f"[eval-only] 載入 checkpoint：{eval_ckpt}"
+              f"（{os.path.getsize(eval_ckpt)/1e9:.2f} GB，"
+              f"{'best' if best_cands else 'last（找不到 best，退而求其次）'}）")
+        v_kwargs = {}
+        if "weights_only" in inspect.signature(trainer.validate).parameters:
+            v_kwargs["weights_only"] = False
+        trainer.validate(module, loaders["val"], ckpt_path=eval_ckpt, **v_kwargs)
+        trainer.test(module, loaders["test"])
+        return
+
     fit_kwargs = {}
     if "weights_only" in inspect.signature(trainer.fit).parameters:
         fit_kwargs["weights_only"] = False

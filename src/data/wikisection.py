@@ -127,8 +127,27 @@ class SegDataset(Dataset):
         out = corrupt_document(
             toks, doc.labels, self.ids, self._rng, p=p, fixed_m=fixed_m, max_len=self.max_len
         )
-        if out is None:  # 超長：退回不挖空版本；仍超長則丟棄（collate 會過濾 None）
+        if out is None:  # 超長：退回不挖空版本
             out = corrupt_document(
                 toks, doc.labels, self.ids, self._rng, p=0.0, fixed_m=0, max_len=self.max_len
+            )
+        if out is None:
+            # 仍超長 → 截斷保留（取能裝進 max_len 的最長句子前綴），而非整篇丟棄。
+            # 舊行為會讓最長的一批文件從 train/val/test 完全消失，評估集不完整、
+            # 與 SpokenNLP（tokenizer 截斷保留前段）不可比。
+            budget = self.max_len - 1
+            cum, m_fit = 0, 0
+            for t in toks:
+                cost = 1 + len(t)
+                if cum + cost > budget:
+                    break
+                cum += cost
+                m_fit += 1
+            if m_fit == 0:
+                return None
+            trunc_labels = doc.labels[:m_fit] if doc.labels is not None else None
+            out = corrupt_document(
+                toks[:m_fit], trunc_labels, self.ids, self._rng,
+                p=0.0, fixed_m=0, max_len=self.max_len,
             )
         return out

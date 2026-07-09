@@ -14,6 +14,7 @@ NAME=$(basename "${CONFIGS[0]}" .yaml)
 for c in "${CONFIGS[@]}"; do
   base=$(basename "$c" .yaml)
   case "$base" in
+    data_disease) ;;  # disease 為預設身分，不加後綴（與 train.py compute_exp_tag 一致）
     data_*) NAME="${NAME}+${base#data_}" ;;
   esac
 done

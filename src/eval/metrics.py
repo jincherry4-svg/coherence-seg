@@ -190,12 +190,24 @@ def pk_wd_spokennlp(
 def scan_threshold(
     probs: list[list[float]], references: list[list[int]], grid=None
 ) -> tuple[float, dict[str, float]]:
-    """在驗證集掃描 threshold（§8）：以 F1 選出最佳，回傳 (threshold, 該點全部指標)。"""
-    grid = grid or [round(0.1 * i, 1) for i in range(1, 10)]
+    """在驗證集掃描 threshold（§8）：選點準則 ((Pk+WD)/2 最小, F1 最大 tie-break)。
+
+    演進紀錄（都是實測踩過的坑）：
+    1. 最初以 F1 選點 → F1 偏好高 recall（過切）→ WD 爆表（35 vs 論文 20.6）。
+    2. 改以 Pk 選點 → 更糟的隱性漏洞：Pevzner & Hearst (2002) 指出 Pk 對
+       false positive（過切）天生寬容，「Pk 最小」的門檻會系統性偏低，等於
+       利用指標缺陷換好看的 Pk，WD 依然爆表（實測 WD/Pk 比 1.85，論文 1.24；
+       對照組：argmax 決策的模型 P>R、比值 1.12 健康）。
+    3. 現行：以 (Pk+WD)/2 最小選點——兩者都是論文要報的指標，同時優化才不會
+       按下葫蘆浮起瓢；F1 作 tie-break。
+    """
+    grid = grid or [round(0.05 * i, 2) for i in range(1, 20)]
     best_t, best = None, None
+    best_key = None
     for t in grid:
         preds = [[int(p > t) for p in doc] for doc in probs]
         res = pk_wd_spokennlp(preds, references)
-        if best is None or res["f1"] > best["f1"]:
-            best_t, best = t, res
+        key = ((res["pk"] + res["wd"]) / 2, -res["f1"])
+        if best_key is None or key < best_key:
+            best_t, best, best_key = t, res, key
     return best_t, best
