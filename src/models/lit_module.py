@@ -195,12 +195,18 @@ class SegLitModule(pl.LightningModule):
         res05 = pk_wd_spokennlp(
             [[int(p > 0.5) for p in doc] for doc in self._val_probs], self._val_refs)
         self.log_dict({f"val/{k}_fixed05": v for k, v in res05.items()})
-        # 逐 epoch 結果表（console 直接可讀，不用開 wandb）
-        ep = self.current_epoch + 1
-        print(f"[epoch {ep}] 掃描門檻 t={t:.2f} │ "
+        # 逐 epoch 結果表（console 直接可讀，不用開 wandb）。
+        # Lightning 預設會在正式訓練前跑 sanity check（num_sanity_val_steps=2），
+        # 此時 self.trainer.sanity_checking 為 True——標成 [sanity check] 避免
+        # 誤認為真正的 epoch 1 結果（batch 數少、模型未訓練，數字毫無意義）。
+        if getattr(self.trainer, "sanity_checking", False):
+            ep_label = "sanity check"
+        else:
+            ep_label = f"epoch {self.current_epoch + 1}"
+        print(f"[{ep_label}] 掃描門檻 t={t:.2f} │ "
               f"Pk {res['pk']:.4f} │ WD {res['wd']:.4f} │ F1 {res['f1']:.4f} │ "
               f"P {res['precision']:.4f} │ R {res['recall']:.4f}")
-        print(f"[epoch {ep}] 固定 0.5   │ "
+        print(f"[{ep_label}] 固定 0.5   │ "
               f"Pk {res05['pk']:.4f} │ WD {res05['wd']:.4f} │ F1 {res05['f1']:.4f} │ "
               f"P {res05['precision']:.4f} │ R {res05['recall']:.4f}"
               f" │ WD/Pk 比 {res['wd']/max(res['pk'],1e-9):.2f}（健康區間 1.1–1.4）")
