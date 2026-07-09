@@ -14,7 +14,8 @@ model:
   # 且 SpokenNLP baseline 亦使用 HF 版，換載入器會破壞可比性）。
   name: allenai/longformer-base-4096
   dropout: 0.1
-  gradient_checkpointing: true
+  # VRAM 充裕時關閉（用重算換記憶體會慢 ~30%）；1080 Ti 等 11GB 卡由設備 config 開回
+  gradient_checkpointing: false
 
 data:
   # name：資料集身分（唯一真相來源）。exp_tag 後綴、開機診斷、路徑交叉檢查都依據它。
@@ -28,7 +29,7 @@ data:
   # （1080 Ti 11GB 可直跑）。長上下文是否有效益留作 ablation：疊加
   # configs/len4096.yaml 顯式啟用。
   max_len: 2048
-  batch_size: 1
+  batch_size: 2
   num_workers: 2
 
 optim:
@@ -62,7 +63,7 @@ mean_teacher:
 train:
   epochs: 10
   precision: bf16-mixed
-  grad_accum: 8             # 有效 batch = 1 × 8 = 8（batch_size 降為 1 後同步加倍）
+  grad_accum: 4             # 有效 batch = 2 × 4 = 8
   patience: 3
   ckpt_every_n_steps: 500   # §9.3 斷線防護
 

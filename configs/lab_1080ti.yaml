@@ -1,9 +1,12 @@
 # 設備疊加設定：實驗室 GTX 1080 Ti（11GB, Pascal）正式訓練
 # 用法：python -m src.train --config configs/m2_reorder.yaml configs/lab_1080ti.yaml
-# 與 A100 唯二差異：batch 與精度。max_len 維持 4096 確保結果可比。
-# 注意：Pascal 無 Tensor Core、不支援 bf16 → fp16 只省記憶體不加速，訓練慢是正常的。
+# 與 base 差異：精度（Pascal 不支援 bf16）、batch、gradient checkpointing（11GB 保守開啟）。
+# max_len 沿用 base 的 2048（與論文一致）。
+# 注意：Pascal 無 Tensor Core、fp16 只省記憶體不加速，訓練慢是正常的。
 seed: 42
 ckpt_dir: ./checkpoints      # 實驗室本地磁碟（非 Drive）
+model:
+  gradient_checkpointing: true   # 11GB 卡保守開啟，寧慢勿 OOM
 data:
   batch_size: 1
   num_workers: 2
