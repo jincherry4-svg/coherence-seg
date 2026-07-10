@@ -33,8 +33,12 @@ data:
   num_workers: 2
 
 optim:
-  lr_encoder: 2.0e-5
-  lr_heads: 1.0e-4
+  # 【與 SpokenNLP 附錄 B 對齊】論文用單一 lr=5e-5（encoder 與分類頭不分開），
+  # batch_size=8（我們的有效 batch 已是 8，一致），dropout=0.1（已一致）。
+  # 我們原設定用分層 lr（encoder 2e-5、heads 1e-4）是常見的 fine-tuning 慣例，
+  # 但既然要對齊論文數字，先用單一 lr 排除變因；分層 lr 留作 ablation 比較。
+  lr_encoder: 5.0e-5
+  lr_heads: 5.0e-5
   weight_decay: 0.01
   warmup_ratio: 0.1
 
@@ -61,7 +65,9 @@ mean_teacher:
   max_decay: 0.999
 
 train:
-  epochs: 10
+  # 【與 SpokenNLP 附錄 B 對齊】論文 WikiSection 專用 epochs=5（WIKI-727K 才是 3）。
+  # patience=3 的 early stopping 仍保留，若 5 epochs 內 val/pk 沒有改善會提前停。
+  epochs: 5
   precision: bf16-mixed
   grad_accum: 4             # 有效 batch = 2 × 4 = 8
   patience: 3
